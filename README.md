@@ -45,3 +45,21 @@ Vale comentar que não subirei o código de meu TCC por se basear e códigos ant
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
 # ou venv\Scripts\activate para Windows
+```
+2. Instale as dependências do Agente:
+
+```Bash
+pip install -r agent/requirements.txt
+```
+3. Configure suas variáveis de ambiente:
+Crie um arquivo .env na raiz do projeto contendo suas chaves:
+
+```Bash
+OPENAI_API_KEY=sua_chave_openai_aqui
+COHERE_API_KEY=sua_chave_cohere_aqui
+```
+4. Realize a Ingestão de Dados (Popular o ChromaDB):
+
+```python 
+agent/ingest_data.py
+```
