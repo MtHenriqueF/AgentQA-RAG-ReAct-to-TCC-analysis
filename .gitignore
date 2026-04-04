@@ -1,0 +1,16 @@
+# Ignorar ambiente virtual
+venv/
+env/
+
+# Ignorar código de TCC
+PPSUS-main/
+
+# Ignorar chaves de API
+.env
+
+# Ignorar o banco de dados vetorial pesado
+chroma_db_local/
+
+# Ignorar caches do Python
+__pycache__/
+*.pyc
