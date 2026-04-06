@@ -8,6 +8,9 @@ PPSUS-main/
 # Ignorar chaves de API
 .env
 
+#ignorar codex
+.codex
+
 # Ignorar o banco de dados vetorial pesado
 chroma_db_local/
 

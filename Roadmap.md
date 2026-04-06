@@ -1,6 +1,6 @@
 - [X] Arquitetura e Fluxo : Definição do escopo, agentes e ferramentas.
 
-- [ ] Ingestão de Dados (Atual): Criar o script Python que varre a pasta do TCC, ignora lixos (.mat, .csv), faz o chunking correto por linguagem e salva no ChromaDB persistido no HD.
+- [X] Ingestão de Dados (Atual): Criar o script Python que varre a pasta do TCC, ignora lixos (.mat, .csv), faz o chunking correto por linguagem e salva no ChromaDB persistido no HD.
 
 - [ ] Módulo de Recuperação (RAG + Rerank): Criar as funções que buscam no banco vetorial e passam pela API da Cohere para filtrar os Top 3 resultados matemáticos mais exatos.
 
