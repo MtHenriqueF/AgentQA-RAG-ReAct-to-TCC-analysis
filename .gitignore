@@ -8,6 +8,8 @@ PPSUS-main/
 # Ignorar chaves de API
 .env
 
+logs/
+
 #ignorar codex
 .codex
 
