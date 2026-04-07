@@ -1,87 +1,99 @@
 import os
+
 from dotenv import load_dotenv
+from langchain_chroma import Chroma
+from langchain_classic.retrievers import ContextualCompressionRetriever
+from langchain_cohere import CohereRerank
+from langchain_openai import OpenAIEmbeddings
+
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))
 ENV_FILE = os.path.join(PROJECT_ROOT, ".env")
 
-# Carrega as chaves da OpenAI e Cohere do .env
 load_dotenv(dotenv_path=ENV_FILE)
 
-from langchain_chroma import Chroma
-from langchain_openai import OpenAIEmbeddings
-from langchain_cohere import CohereRerank
-from langchain_classic.retrievers import ContextualCompressionRetriever
-
-# --- CONFIGURAÇÕES ---
 CHROMA_PERSIST_DIR = os.path.join(BASE_DIR, "chroma_db_local")
+EMBEDDING_MODEL = "text-embedding-3-small"
+RERANK_MODEL = "rerank-multilingual-v3.0"
+BASE_RETRIEVER_K = 15
+RERANK_TOP_N = 3
 
-if not os.getenv("OPENAI_API_KEY"):
-    raise RuntimeError(
-        "OPENAI_API_KEY não encontrada. Verifique o arquivo .env na raiz do projeto."
+
+def require_env(var_name: str):
+    if not os.getenv(var_name):
+        raise RuntimeError(
+            f"{var_name} não encontrada. Verifique o arquivo .env na raiz do projeto."
+        )
+
+
+def normalize_collection_names(collection_names):
+    if isinstance(collection_names, str):
+        return [collection_names]
+    return list(collection_names)
+
+
+def build_embeddings():
+    require_env("OPENAI_API_KEY")
+    return OpenAIEmbeddings(model=EMBEDDING_MODEL)
+
+
+def build_reranker(top_n: int = RERANK_TOP_N):
+    require_env("COHERE_API_KEY")
+    return CohereRerank(
+        model=RERANK_MODEL,
+        top_n=top_n,
     )
 
-if not os.getenv("COHERE_API_KEY"):
-    raise RuntimeError(
-        "COHERE_API_KEY não encontrada. Verifique o arquivo .env na raiz do projeto."
-    )
 
-# Instanciamos o mesmo modelo de matemática para conseguirmos "ler" o banco
-embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-
-def get_advanced_retriever(collection_name: str):
-    """
-    Cria um buscador avançado em duas etapas para uma coleção específica.
-    Etapa 1: Pega os Top 15 resultados (ChromaDB)
-    Etapa 2: Filtra e devolve os Top 3 exatos (Cohere Rerank)
-    """
-    
-    # 1. A Rede Larga: Conecta ao banco vetorial existente
-    vectorstore = Chroma(
+def build_vectorstore(collection_name: str):
+    return Chroma(
         collection_name=collection_name,
-        embedding_function=embeddings,
-        persist_directory=CHROMA_PERSIST_DIR
+        embedding_function=build_embeddings(),
+        persist_directory=CHROMA_PERSIST_DIR,
     )
-    
-    # Configura para trazer 15 documentos baseados na matemática pura
-    base_retriever = vectorstore.as_retriever(search_kwargs={"k": 15})
-    
-    # 2. A Pinça: Configura o modelo de Rerank da Cohere
-    # Usamos o modelo multilíngue pois seu TCC tem português e código (inglês)
-    compressor = CohereRerank(
-        model="rerank-multilingual-v3.0", 
-        top_n=3  # Só queremos os 3 melhores textos no final
-    )
-    
-    # 3. Une as duas etapas em uma ferramenta só
-    compression_retriever = ContextualCompressionRetriever(
-        base_compressor=compressor,
-        base_retriever=base_retriever
-    )
-    
-    return compression_retriever
 
-# --- ÁREA DE TESTE LOCAL ---
-if __name__ == "__main__":
-    print("Testando o Retriever Avançado (Rerank)...")
-    
-    # Vamos testar buscando na gaveta de código (lógica)
-    colecao = "logica" 
-    pergunta = "Onde estão as definições de especialidade dos recursos materiais?"
-    
-    try:
-        retriever = get_advanced_retriever(colecao)
-        print(f"\nBuscando na coleção '{colecao}' pela pergunta: '{pergunta}'")
-        
-        # O .invoke dispara todo o pipeline (Rede + Pinça)
-        resultados = retriever.invoke(pergunta)
-        
-        print("\n--- TOP 3 RESULTADOS ENCONTRADOS ---")
-        for i, doc in enumerate(resultados):
-            print(f"\nResultado {i+1} (Arquivo: {doc.metadata.get('source')}):")
-            # Imprime os primeiros 200 caracteres para não poluir o terminal
-            print(doc.page_content[:200] + "...\n")
-            print("-" * 40)
-            
-    except Exception as e:
-         print(f"Erro ao buscar: {e}")
+
+def get_similarity_retriever(collection_name: str, k: int = BASE_RETRIEVER_K):
+    vectorstore = build_vectorstore(collection_name)
+    return vectorstore.as_retriever(search_kwargs={"k": k})
+
+
+def get_advanced_retriever(
+    collection_name: str,
+    k: int = BASE_RETRIEVER_K,
+    top_n: int = RERANK_TOP_N,
+):
+    vectorstore = build_vectorstore(collection_name)
+    base_retriever = vectorstore.as_retriever(search_kwargs={"k": k})
+    compressor = build_reranker(top_n=top_n)
+
+    return ContextualCompressionRetriever(
+        base_compressor=compressor,
+        base_retriever=base_retriever,
+    )
+
+
+def retrieve_similarity_documents(collection_names, query: str, k: int = BASE_RETRIEVER_K):
+    documents = []
+
+    for collection_name in normalize_collection_names(collection_names):
+        retriever = get_similarity_retriever(collection_name, k=k)
+        for document in retriever.invoke(query):
+            document.metadata["collection_name"] = collection_name
+            documents.append(document)
+
+    return documents
+
+
+def retrieve_ranked_documents(
+    collection_names,
+    query: str,
+    k: int = BASE_RETRIEVER_K,
+    top_n: int = RERANK_TOP_N,
+):
+    documents = retrieve_similarity_documents(collection_names, query=query, k=k)
+    if not documents:
+        return []
+
+    return list(build_reranker(top_n=top_n).compress_documents(documents, query=query))
