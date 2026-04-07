@@ -8,3 +8,5 @@ langchain-chroma
 tiktoken
 python-dotenv
 pypdf
+langchain-anthropic
+langchain-groq
