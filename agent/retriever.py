@@ -17,7 +17,7 @@ CHROMA_PERSIST_DIR = os.path.join(BASE_DIR, "chroma_db_local")
 EMBEDDING_MODEL = "text-embedding-3-small"
 RERANK_MODEL = "rerank-multilingual-v3.0"
 BASE_RETRIEVER_K = 15
-RERANK_TOP_N = 3
+RERANK_TOP_N = 5
 
 
 def require_env(var_name: str):

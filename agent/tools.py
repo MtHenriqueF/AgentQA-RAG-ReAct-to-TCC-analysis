@@ -1,18 +1,22 @@
 from langchain_core.tools import tool
 
 # Importe os retrievers que você acabou de criar
-from retriever import retrieve_ranked_documents, retrieve_similarity_documents
+from agent.retriever import retrieve_ranked_documents, retrieve_similarity_documents
 
 @tool
 def search_project_knowledge(query: str) -> str:
     """
     Busca informações na base de conhecimento do projeto. 
-    Use esta ferramenta SEMPRE que o usuário fizer perguntas sobre as regras de negócio, 
-    arquitetura, lógica do código (ex: arquivos .c, .py) ou definições de entidades do sistema.
+    Use esta ferramenta SEMPRE que o usuário fizer perguntas técnicas.
+    
+    Exemplo de uso:
+    Usuário: "Como o sistema valida o token JWT?"
+    Ação: search_project_knowledge(query="validação token JWT auth.py")
     
     Args:
-        query: A pergunta ou termo de busca em linguagem natural.
+        query: A pergunta ou termos chave para a busca.
     """
+    
     # Defina as coleções que o agente deve buscar por padrão. 
     # Adapte esses nomes para as coleções que você realmente possui no Chroma.
     collections = ["logica", "teoria"] 
