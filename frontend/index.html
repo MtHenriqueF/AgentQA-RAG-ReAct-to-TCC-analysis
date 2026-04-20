@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TCC QA Agent</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="brand-block">
+          <span class="brand-kicker">RAG Quality Assurance</span>
+          <div>
+            <h1>TCC QA Agent</h1>
+            <p>Interface de conversa para consultar a base vetorial do projeto.</p>
+          </div>
+        </div>
+
+        <div class="header-controls">
+          <label class="provider-control" for="provider-select">
+            <span>Modelo</span>
+            <select id="provider-select" aria-label="Selecionar modelo">
+              <option value="openai">openai</option>
+              <option value="claude">claude</option>
+              <option value="llama">llama</option>
+            </select>
+          </label>
+
+          <button id="reset-session-button" class="ghost-button" type="button">
+            Nova sessão
+          </button>
+        </div>
+      </header>
+
+      <main class="app-main">
+        <section class="chat-frame">
+          <div class="chat-intro">
+            <div>
+              <p class="eyebrow">Conversational RAG Workspace</p>
+              <h2>Converse com o contexto do TCC</h2>
+              <p class="subtitle">
+                O backend mantém o fluxo LangGraph, a memória persistente e a recuperação
+                vetorial. O front só gerencia a sessão e as requisições HTTP.
+              </p>
+            </div>
+
+            <div class="session-panel">
+              <span class="session-label">Session ID</span>
+              <code id="session-id-display"></code>
+            </div>
+          </div>
+
+          <div
+            id="status-banner"
+            class="status-banner hidden"
+            role="status"
+            aria-live="polite"
+          ></div>
+
+          <section
+            id="chat-history"
+            class="chat-history"
+            aria-label="Histórico da conversa"
+            aria-live="polite"
+          ></section>
+        </section>
+      </main>
+
+      <footer class="composer-shell">
+        <form id="chat-form" class="composer-form">
+          <label class="sr-only" for="chat-input">Mensagem</label>
+          <textarea
+            id="chat-input"
+            name="message"
+            rows="1"
+            maxlength="4000"
+            placeholder="Pergunte sobre arquitetura, fluxo, código ou regras de negócio..."
+          ></textarea>
+
+          <div class="composer-actions">
+            <p class="composer-hint">Enter envia. Shift + Enter quebra linha.</p>
+            <button id="send-button" class="send-button" type="submit">Enviar</button>
+          </div>
+        </form>
+      </footer>
+    </div>
+
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>
