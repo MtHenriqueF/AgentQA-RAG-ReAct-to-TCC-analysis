@@ -2,18 +2,35 @@ const STORAGE_KEYS = {
   sessionId: "tcc-qa.session-id",
   provider: "tcc-qa.provider",
   history: "tcc-qa.history",
+  accessPassword: "tcc-qa.access-password",
 };
 
-const API_ENDPOINT =
+const API_BASE =
   window.location.protocol === "file:"
-    ? "http://127.0.0.1:8000/api/chat"
-    : `${window.location.origin}/api/chat`;
+    ? "http://127.0.0.1:8000/api"
+    : `${window.location.origin}/api`;
+
+const ENDPOINTS = {
+  chat: `${API_BASE}/chat`,
+  config: `${API_BASE}/config`,
+  verifyAccess: `${API_BASE}/access/verify`,
+};
+
+const PROVIDER_ORDER = ["llama", "openai", "claude"];
+const DEFAULT_PLACEHOLDER =
+  "Pergunte sobre arquitetura, fluxo, código ou regras de negócio...";
 
 const state = {
   sessionId: loadOrCreateSessionId(),
   provider: loadProvider(),
   messages: loadHistory(),
   isSending: false,
+  isVerifyingAccess: false,
+  accessPassword: loadAccessPassword(),
+  accessVerified: false,
+  accessMessage: "",
+  accessTone: "neutral",
+  config: createFallbackConfig(),
 };
 
 const elements = {
@@ -22,33 +39,103 @@ const elements = {
   sendButton: document.querySelector("#send-button"),
   chatHistory: document.querySelector("#chat-history"),
   providerSelect: document.querySelector("#provider-select"),
+  providerSummary: document.querySelector("#provider-summary"),
   sessionIdDisplay: document.querySelector("#session-id-display"),
   statusBanner: document.querySelector("#status-banner"),
   resetSessionButton: document.querySelector("#reset-session-button"),
+  accessPassword: document.querySelector("#access-password"),
+  accessDescription: document.querySelector("#access-description"),
+  accessStatus: document.querySelector("#access-status"),
+  verifyAccessButton: document.querySelector("#verify-access-button"),
+  clearAccessButton: document.querySelector("#clear-access-button"),
 };
 
-bootstrap();
+bootstrap().catch((error) => {
+  console.error(error);
+  showStatus("Não foi possível carregar a configuração do servidor.");
+});
 
-function bootstrap() {
-  elements.providerSelect.value = state.provider;
+async function bootstrap() {
   elements.sessionIdDisplay.textContent = state.sessionId;
   elements.sessionIdDisplay.title = state.sessionId;
+  elements.accessPassword.value = state.accessPassword;
   renderMessages();
-  updateComposerState();
   autoResizeTextarea();
+  bindEvents();
+  updateProviderOptions();
+  updateProviderSummary();
+  updateAccessSection();
+  updateComposerState();
 
+  await hydrateRuntimeConfig();
+
+  if (state.accessPassword && hasProtectedProviders()) {
+    await verifyAccess({ silentSuccess: true });
+  } else {
+    updateProviderOptions();
+    updateProviderSummary();
+    updateAccessSection();
+    updateComposerState();
+  }
+}
+
+function bindEvents() {
   elements.chatForm.addEventListener("submit", handleSubmit);
   elements.chatInput.addEventListener("input", autoResizeTextarea);
   elements.chatInput.addEventListener("keydown", handleTextareaKeydown);
   elements.providerSelect.addEventListener("change", handleProviderChange);
   elements.resetSessionButton.addEventListener("click", startNewSession);
+  elements.verifyAccessButton.addEventListener("click", () => verifyAccess());
+  elements.clearAccessButton.addEventListener("click", clearAccess);
+  elements.accessPassword.addEventListener("input", handleAccessPasswordInput);
+  elements.accessPassword.addEventListener("keydown", handleAccessPasswordKeydown);
+}
+
+async function hydrateRuntimeConfig() {
+  try {
+    const response = await fetch(ENDPOINTS.config);
+    const payload = await parseJsonSafe(response);
+
+    if (!response.ok) {
+      throw new Error(extractErrorMessage(payload, response.status));
+    }
+
+    state.config = normalizeRuntimeConfig(payload);
+    syncProviderSelection();
+    hideStatus();
+  } catch (error) {
+    console.error("Falha ao carregar /api/config:", error);
+    showStatus("Usando configuração local temporária porque /api/config não respondeu.");
+  }
+
+  updateProviderOptions();
+  updateProviderSummary();
+  updateAccessSection();
+  updateComposerState();
 }
 
 async function handleSubmit(event) {
   event.preventDefault();
 
   const content = elements.chatInput.value.trim();
-  if (!content || state.isSending) {
+  if (!content || state.isSending || state.isVerifyingAccess) {
+    return;
+  }
+
+  const providerConfig = getProviderConfig(state.provider);
+  if (!providerConfig) {
+    showStatus("O provedor selecionado não existe na configuração carregada.");
+    return;
+  }
+
+  if (!providerConfig.available) {
+    showStatus(providerConfig.reason || "O provedor selecionado não está disponível.");
+    return;
+  }
+
+  if (providerConfig.requiresPassword && !state.accessVerified) {
+    showStatus("Digite e valide a senha do app para usar este provedor.");
+    elements.accessPassword.focus();
     return;
   }
 
@@ -75,11 +162,9 @@ async function handleSubmit(event) {
   updateComposerState();
 
   try {
-    const response = await fetch(API_ENDPOINT, {
+    const response = await fetch(ENDPOINTS.chat, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: buildChatHeaders(),
       body: JSON.stringify({
         session_id: state.sessionId,
         message: content,
@@ -89,6 +174,12 @@ async function handleSubmit(event) {
 
     const payload = await parseJsonSafe(response);
     if (!response.ok) {
+      if (response.status === 403 && providerConfig.requiresPassword) {
+        invalidateAccess(
+          "A senha do app foi rejeitada. Valide novamente para usar os modelos premium.",
+        );
+      }
+
       throw new Error(extractErrorMessage(payload, response.status));
     }
 
@@ -121,6 +212,9 @@ async function handleSubmit(event) {
     state.isSending = false;
     persistHistory();
     renderMessages();
+    updateProviderOptions();
+    updateProviderSummary();
+    updateAccessSection();
     updateComposerState();
     elements.chatInput.focus();
   }
@@ -133,9 +227,42 @@ function handleTextareaKeydown(event) {
   }
 }
 
+function handleAccessPasswordKeydown(event) {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    verifyAccess();
+  }
+}
+
+function handleAccessPasswordInput() {
+  const typedPassword = elements.accessPassword.value.trim();
+  if (!state.accessVerified) {
+    updateAccessSection();
+    updateComposerState();
+    return;
+  }
+
+  if (typedPassword === state.accessPassword) {
+    return;
+  }
+
+  sessionStorage.removeItem(STORAGE_KEYS.accessPassword);
+  state.accessPassword = "";
+  state.accessVerified = false;
+  setAccessFeedback("Senha alterada. Valide novamente para liberar os modelos premium.", "warning");
+  updateProviderOptions();
+  updateProviderSummary();
+  updateAccessSection();
+  updateComposerState();
+}
+
 function handleProviderChange(event) {
   state.provider = event.target.value;
   localStorage.setItem(STORAGE_KEYS.provider, state.provider);
+  hideStatus();
+  updateProviderSummary();
+  updateAccessSection();
+  updateComposerState();
 }
 
 function startNewSession() {
@@ -154,11 +281,284 @@ function startNewSession() {
   elements.chatInput.focus();
 }
 
+async function verifyAccess({ silentSuccess = false } = {}) {
+  if (!hasProtectedProviders()) {
+    setAccessFeedback("Nenhum provedor protegido está ativo neste deploy.", "warning");
+    updateAccessSection();
+    return false;
+  }
+
+  const password = elements.accessPassword.value.trim();
+  if (!password) {
+    invalidateAccess("Digite a senha do app antes de validar o acesso.");
+    elements.accessPassword.focus();
+    return false;
+  }
+
+  state.isVerifyingAccess = true;
+  setAccessFeedback("Validando senha no servidor...", "neutral");
+  updateAccessSection();
+  updateComposerState();
+
+  try {
+    const response = await fetch(ENDPOINTS.verifyAccess, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ password }),
+    });
+
+    const payload = await parseJsonSafe(response);
+    if (!response.ok) {
+      throw new Error(extractErrorMessage(payload, response.status));
+    }
+
+    state.accessPassword = password;
+    state.accessVerified = true;
+    sessionStorage.setItem(STORAGE_KEYS.accessPassword, password);
+    setAccessFeedback(
+      silentSuccess ? "Acesso premium mantido neste navegador." : "Acesso premium liberado.",
+      "success",
+    );
+    hideStatus();
+    return true;
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : "Não foi possível validar a senha.";
+    invalidateAccess(errorMessage, { keepInput: true });
+    return false;
+  } finally {
+    state.isVerifyingAccess = false;
+    updateProviderOptions();
+    updateProviderSummary();
+    updateAccessSection();
+    updateComposerState();
+  }
+}
+
+function clearAccess() {
+  sessionStorage.removeItem(STORAGE_KEYS.accessPassword);
+  state.accessPassword = "";
+  state.accessVerified = false;
+  elements.accessPassword.value = "";
+  setAccessFeedback("Senha removida deste navegador.", "neutral");
+  updateProviderOptions();
+  updateProviderSummary();
+  updateAccessSection();
+  updateComposerState();
+}
+
+function invalidateAccess(message, { keepInput = false } = {}) {
+  sessionStorage.removeItem(STORAGE_KEYS.accessPassword);
+  state.accessPassword = "";
+  state.accessVerified = false;
+  if (!keepInput) {
+    elements.accessPassword.value = "";
+  }
+  setAccessFeedback(message, "danger");
+}
+
+function setAccessFeedback(message, tone = "neutral") {
+  state.accessMessage = message;
+  state.accessTone = tone;
+}
+
+function createFallbackConfig() {
+  return normalizeRuntimeConfig({
+    default_provider: "llama",
+    providers: [
+      {
+        id: "llama",
+        label: "Llama 3.1 via Groq",
+        requires_password: false,
+        available: true,
+      },
+      {
+        id: "openai",
+        label: "OpenAI",
+        requires_password: true,
+        available: true,
+      },
+      {
+        id: "claude",
+        label: "Claude",
+        requires_password: true,
+        available: true,
+      },
+    ],
+  });
+}
+
+function normalizeRuntimeConfig(payload) {
+  const providers = {};
+
+  if (payload && Array.isArray(payload.providers)) {
+    payload.providers.forEach((provider) => {
+      if (!provider || typeof provider.id !== "string") {
+        return;
+      }
+
+      providers[provider.id] = {
+        id: provider.id,
+        label: typeof provider.label === "string" ? provider.label : getProviderLabel(provider.id),
+        requiresPassword: Boolean(provider.requires_password),
+        available: Boolean(provider.available),
+        reason: typeof provider.reason === "string" ? provider.reason : "",
+      };
+    });
+  }
+
+  PROVIDER_ORDER.forEach((providerId) => {
+    if (!providers[providerId]) {
+      providers[providerId] = {
+        id: providerId,
+        label: getProviderLabel(providerId),
+        requiresPassword: providerId !== "llama",
+        available: false,
+        reason: "O servidor não expôs este provedor na configuração pública.",
+      };
+    }
+  });
+
+  const defaultProvider =
+    typeof payload?.default_provider === "string" && providers[payload.default_provider]
+      ? payload.default_provider
+      : pickDefaultProvider(providers);
+
+  return {
+    defaultProvider,
+    providers,
+  };
+}
+
+function pickDefaultProvider(providers) {
+  const freeProviders = PROVIDER_ORDER.filter((providerId) => {
+    const provider = providers[providerId];
+    return provider && provider.available && !provider.requiresPassword;
+  });
+  if (freeProviders.length) {
+    return freeProviders[0];
+  }
+
+  const availableProviders = PROVIDER_ORDER.filter((providerId) => {
+    const provider = providers[providerId];
+    return provider && provider.available;
+  });
+  if (availableProviders.length) {
+    return availableProviders[0];
+  }
+
+  return PROVIDER_ORDER[0];
+}
+
+function syncProviderSelection() {
+  const selectedProvider = getProviderConfig(state.provider);
+  if (selectedProvider && selectedProvider.available) {
+    return;
+  }
+
+  state.provider = state.config.defaultProvider;
+  localStorage.setItem(STORAGE_KEYS.provider, state.provider);
+}
+
+function updateProviderOptions() {
+  elements.providerSelect.textContent = "";
+
+  PROVIDER_ORDER.forEach((providerId) => {
+    const provider = getProviderConfig(providerId);
+    if (!provider) {
+      return;
+    }
+
+    const option = document.createElement("option");
+    option.value = providerId;
+    option.disabled = !provider.available;
+    option.textContent = buildProviderOptionLabel(provider);
+    elements.providerSelect.appendChild(option);
+  });
+
+  elements.providerSelect.value = state.provider;
+}
+
+function buildProviderOptionLabel(provider) {
+  if (!provider.available) {
+    return `${provider.label} · indisponível`;
+  }
+
+  if (!provider.requiresPassword) {
+    return `${provider.label} · livre`;
+  }
+
+  return state.accessVerified
+    ? `${provider.label} · premium liberado`
+    : `${provider.label} · premium`;
+}
+
+function updateProviderSummary() {
+  const provider = getProviderConfig(state.provider);
+  if (!provider) {
+    elements.providerSummary.textContent = "Selecione um provedor válido.";
+    return;
+  }
+
+  if (!provider.available) {
+    elements.providerSummary.textContent = provider.reason || "Indisponível no servidor.";
+    return;
+  }
+
+  if (!provider.requiresPassword) {
+    elements.providerSummary.textContent = "Modelo livre para consulta sem senha.";
+    return;
+  }
+
+  elements.providerSummary.textContent = state.accessVerified
+    ? "Modelo premium liberado neste navegador."
+    : "Modelo premium: valide a senha para enviar requisições.";
+}
+
+function updateAccessSection() {
+  const protectedProviders = getProtectedProviders().filter((provider) => provider.available);
+  const freeProviders = getFreeProviders().filter((provider) => provider.available);
+
+  if (!protectedProviders.length) {
+    elements.accessDescription.textContent =
+      freeProviders.length
+        ? `Somente os modelos livres estão ativos neste deploy: ${freeProviders.map((provider) => provider.label).join(", ")}.`
+        : "Nenhum provedor está ativo no servidor no momento.";
+  } else {
+    const protectedNames = protectedProviders.map((provider) => provider.label).join(", ");
+    const freeNames = freeProviders.length
+      ? ` Modelos livres: ${freeProviders.map((provider) => provider.label).join(", ")}.`
+      : "";
+    elements.accessDescription.textContent =
+      `${protectedNames} exigem a senha configurada no servidor.` + freeNames;
+  }
+
+  elements.accessPassword.disabled = state.isVerifyingAccess || !protectedProviders.length;
+  elements.verifyAccessButton.disabled = state.isVerifyingAccess || !protectedProviders.length;
+  elements.clearAccessButton.disabled =
+    state.isVerifyingAccess || (!state.accessVerified && !elements.accessPassword.value.trim());
+
+  if (!state.accessMessage) {
+    if (!protectedProviders.length) {
+      setAccessFeedback("Não há modelos premium ativos neste deploy.", "neutral");
+    } else if (state.accessVerified) {
+      setAccessFeedback("Acesso premium já validado neste navegador.", "success");
+    } else {
+      setAccessFeedback("Digite a senha do app para liberar OpenAI e Claude.", "neutral");
+    }
+  }
+
+  elements.accessStatus.textContent = state.accessMessage;
+  elements.accessStatus.dataset.tone = state.accessTone;
+}
+
 function createWelcomeMessage() {
   return createMessage({
     role: "system",
     content:
-      "Pergunte sobre o projeto e eu envio sua consulta para a API do agente. Use o seletor para trocar o provedor antes de enviar a mensagem.",
+      "O site pode ficar aberto publicamente, mas os modelos premium só respondem depois que a senha do app é validada no backend.",
   });
 }
 
@@ -406,10 +806,43 @@ function escapeHtml(value) {
 }
 
 function updateComposerState() {
+  const currentProvider = getProviderConfig(state.provider);
+  const canSend =
+    Boolean(currentProvider) &&
+    currentProvider.available &&
+    (!currentProvider.requiresPassword || state.accessVerified);
+
   elements.chatInput.disabled = state.isSending;
-  elements.sendButton.disabled = state.isSending;
-  elements.providerSelect.disabled = state.isSending;
-  elements.resetSessionButton.disabled = state.isSending;
+  elements.providerSelect.disabled = state.isSending || state.isVerifyingAccess;
+  elements.resetSessionButton.disabled = state.isSending || state.isVerifyingAccess;
+  elements.sendButton.disabled = state.isSending || state.isVerifyingAccess || !canSend;
+  elements.sendButton.textContent = state.isSending
+    ? "Enviando..."
+    : state.isVerifyingAccess
+      ? "Validando..."
+      : canSend
+        ? "Enviar"
+        : currentProvider && currentProvider.requiresPassword && currentProvider.available
+          ? "Senha necessária"
+          : "Indisponível";
+
+  if (!currentProvider) {
+    elements.chatInput.placeholder = DEFAULT_PLACEHOLDER;
+    return;
+  }
+
+  if (!currentProvider.available) {
+    elements.chatInput.placeholder = "Escolha um provedor disponível para enviar a consulta.";
+    return;
+  }
+
+  if (currentProvider.requiresPassword && !state.accessVerified) {
+    elements.chatInput.placeholder =
+      "Valide a senha acima para usar este provedor premium.";
+    return;
+  }
+
+  elements.chatInput.placeholder = DEFAULT_PLACEHOLDER;
 }
 
 function autoResizeTextarea() {
@@ -468,7 +901,11 @@ function loadHistory() {
 
 function loadProvider() {
   const provider = localStorage.getItem(STORAGE_KEYS.provider);
-  return ["openai", "claude", "llama"].includes(provider) ? provider : "openai";
+  return PROVIDER_ORDER.includes(provider) ? provider : "llama";
+}
+
+function loadAccessPassword() {
+  return sessionStorage.getItem(STORAGE_KEYS.accessPassword) || "";
 }
 
 function loadOrCreateSessionId() {
@@ -490,6 +927,54 @@ function createSessionId() {
   return `tcc-qa-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function getProviderConfig(providerId) {
+  return state.config.providers[providerId] || null;
+}
+
+function getProtectedProviders() {
+  return PROVIDER_ORDER.map((providerId) => getProviderConfig(providerId)).filter(
+    (provider) => provider && provider.requiresPassword,
+  );
+}
+
+function getFreeProviders() {
+  return PROVIDER_ORDER.map((providerId) => getProviderConfig(providerId)).filter(
+    (provider) => provider && !provider.requiresPassword,
+  );
+}
+
+function hasProtectedProviders() {
+  return getProtectedProviders().some((provider) => provider.available);
+}
+
+function getProviderLabel(providerId) {
+  if (providerId === "llama") {
+    return "Llama 3.1 via Groq";
+  }
+
+  if (providerId === "openai") {
+    return "OpenAI";
+  }
+
+  if (providerId === "claude") {
+    return "Claude";
+  }
+
+  return providerId;
+}
+
+function buildChatHeaders() {
+  const headers = {
+    "Content-Type": "application/json",
+  };
+
+  if (state.accessVerified && state.accessPassword) {
+    headers["X-Access-Password"] = state.accessPassword;
+  }
+
+  return headers;
+}
+
 function getAuthorLabel(message) {
   if (message.isError) {
     return "Erro";
@@ -503,7 +988,7 @@ function getAuthorLabel(message) {
     return "Sistema";
   }
 
-  return `IA · ${message.provider || state.provider}`;
+  return `IA · ${getProviderLabel(message.provider || state.provider)}`;
 }
 
 function formatTimestamp(isoDate) {
@@ -535,8 +1020,12 @@ function extractErrorMessage(payload, statusCode) {
     return "O provedor selecionado não está configurado no servidor.";
   }
 
+  if (statusCode === 403) {
+    return "A senha do app não foi aceita para este provedor.";
+  }
+
   if (statusCode === 400) {
-    return "A API rejeitou a requisição. Revise o modelo selecionado e tente novamente.";
+    return "A API rejeitou a requisição. Revise os dados enviados e tente novamente.";
   }
 
   return "Não foi possível processar a resposta da API. Verifique se o backend está online.";

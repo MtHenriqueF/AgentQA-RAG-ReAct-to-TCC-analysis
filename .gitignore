@@ -13,8 +13,11 @@ logs/
 #ignorar codex
 .codex
 
-# Ignorar o banco de dados vetorial pesado
-chroma_db_local/
+# Versionamos a base vetorial para o deploy no Render.
+# Ignore apenas arquivos transitórios do SQLite/Chroma.
+agent/chroma_db_local/*.sqlite3-shm
+agent/chroma_db_local/*.sqlite3-wal
+agent/chroma_db_local/*.sqlite3-journal
 
 # Ignorar caches do Python
 __pycache__/
