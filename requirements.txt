@@ -1,8 +1,10 @@
+fastapi
 langchain
 langchain-classic
 langchain-openai
 langchain-community
 langchain-cohere
+langgraph
 chromadb
 langchain-chroma
 tiktoken
@@ -13,3 +15,4 @@ langchain-groq
 langgraph-checkpoint-postgres
 psycopg
 psycopg-pool
+uvicorn[standard]
