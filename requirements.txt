@@ -10,3 +10,6 @@ python-dotenv
 pypdf
 langchain-anthropic
 langchain-groq
+langgraph-checkpoint-postgres
+psycopg
+psycopg-pool
